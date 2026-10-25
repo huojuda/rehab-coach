@@ -28,23 +28,50 @@
 
 ```
 index.html              主程序（单文件，内联全部 JS/CSS，无构建步骤）
+server.mjs              本地服务器：静态资源 + /api 函数 + 可选 https
+verify.mjs              部署自检脚本（25 项快速 / 32 项含模型调用）
 assets/model/           MediaPipe 姿态模型（lite / full 两档，full 优先，失败自动降级）
 assets/mp/              MediaPipe 运行时（wasm + ES module），自托管
 assets/moves/           康复动作角度模板（JSON，10 fps 关键帧）
 tools/fk.js             正向运动学引擎：关节角 → 火柴人骨架坐标
 tools/replay.html       标准动作 vs 实际动作的对比页（并排/叠加、阈值联动）
-edge-functions/         EdgeOne 边缘函数（大模型代理，密钥留服务端）
+edge-functions/api/     边缘函数：ping（探针）/ plan（周计划）/ coach（训练点评）
 ```
 
 ## 本地运行
 
 必须在 `localhost` 或 https 下打开——`getUserMedia` 要求安全上下文，`file://` 会被浏览器直接拒绝授权。
 
+需要 **Node.js 22+**（用到内置的 `fetch` / `Request` / `Response`），无第三方依赖、无需 `npm install`。
+
 ```bash
-# 任意静态服务器均可，注意 .wasm 要返回 application/wasm
-python -m http.server 8848
-# 然后访问 http://localhost:8848/index.html
+# 1. 配环境变量（只有智能体接口需要；纯前端预览可跳过）
+cp .env.example .env.local
+# 然后编辑 .env.local，填入 DEEPSEEK_API_KEY
+
+# 2. 启动（静态资源 + /api 函数一起托管）
+node server.mjs
+# → http://localhost:8848/
+
+# 3. 自检
+node verify.mjs          # 快速，25 项
+node verify.mjs --full   # 含真实模型调用，32 项
 ```
+
+`server.mjs` 一个进程同时做三件事：托管静态资源（`.wasm` / `.mjs` 的 MIME 已处理对）、把 `/api/*` 转发给 `edge-functions/` 下的真实函数（不复制逻辑，改完即生效）、以及可选的 https。
+
+### 手机上试
+
+手机浏览器同样要求 https。局域网 http 不算安全上下文，摄像头会被拒。
+
+```bash
+node server.mjs --gen-cert          # 生成自签证书到 .certs/
+node server.mjs --https             # → https://<内网IP>:8443/
+```
+
+自签证书浏览器会报警，选「继续访问」即可。iOS 需要额外在「设置 → 通用 → VPN与设备管理」里信任一次。
+
+> 只用电脑的话不需要 https，`localhost` 本身就是安全上下文。
 
 调试日志：地址后加 `?debug=1`。
 

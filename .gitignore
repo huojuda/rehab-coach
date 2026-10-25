@@ -16,3 +16,8 @@ node_modules/
 # 说明：assets/mp/ 与 assets/model/ 必须提交。
 # 本项目要求运行期不依赖任何 CDN，wasm 与模型全部自托管，
 # 所以它们是作品的一部分，不是可再生成的产物。
+
+# 本地环境变量与自签证书（含密钥，绝不入库）
+.env.local
+.env
+.certs/

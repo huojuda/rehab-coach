@@ -579,6 +579,9 @@
         var vs = [];
         try { vs = speechSynthesis.getVoices() || []; } catch (e) { vs = []; }
         self.voice = null;
+        // Chrome 首次调用 getVoices() 常返回空数组，稍后由 onvoiceschanged 再来一次。
+        // 此时不要记「无中文语音」，那会误导成设备不支持。
+        if (!vs.length) { Log.add('voice', '语音列表尚未就绪，等待加载'); return; }
         for (var i = 0; i < vs.length; i++) {
           if (/^zh([-_])(CN|Hans)/i.test(vs[i].lang)) { self.voice = vs[i]; break; }
         }
@@ -587,7 +590,8 @@
             if (/^zh/i.test(vs[j].lang)) { self.voice = vs[j]; break; }
           }
         }
-        Log.add('voice', '语音 ' + vs.length + ' 个' + (self.voice ? '，选用 ' + self.voice.name : '，无中文语音'));
+        if (self.voice) Log.add('voice', '共 ' + vs.length + ' 个语音，选用 ' + self.voice.name);
+        else Log.add('voice', '共 ' + vs.length + ' 个语音，但没有中文，将只有画面提示');
       }
       pick();
       // Chrome 的 voices 是异步加载的，首次可能为空
