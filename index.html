@@ -155,9 +155,20 @@
     wasmDir: './assets/mp/wasm',
     bundleUrl: './assets/mp/vision_bundle.mjs',
     visThreshold: 0.65,   // 关键点可见度低于此值不判定
-    smoothAlpha: 0.35,    // 指数平滑：越小越稳、越迟钝
+    smoothAlpha: 0.35,    // 旧版固定 EMA，仅在 OneEuro 不可用时兜底
     deadZone: 1.5,        // 角度变化小于此值不更新（抖动死区）
-    repGoal: 10           // 每组次数
+    repGoal: 10,          // 每组次数
+
+    // OneEuro：静止强平滑、快速运动低延迟。默认参数取自算法原论文的常用值
+    oneEuro: { minCutoff: 1.0, beta: 0.007, dCutoff: 1.0 },
+    medianWindow: 5,      // 中位数窗口帧数，抑制单帧跳变
+    // 基线校准：站立时三个关节都接近伸直，取这段时间的中位数作为个体基准，
+    // 把读数平移到 175° 附近，消除机型与体型带来的固定偏差。阈值无需改动。
+    baselineFrames: 40,
+    baselineTimeoutMs: 8000, // 采样超时：拿不到有效帧也必须放行，不能卡在校准阶段
+    baseRefAngle: 175,
+    baselineMaxAdjust: 25, // 校正量上限，超过说明采样时没站好，忽略
+    orientFront: 0.62      // 朝向比值超过此值视为「正对镜头」，提示侧身
   };
 
   /* ==================== 诊断日志 ====================
@@ -322,6 +333,39 @@
       var deg = Math.abs(d1 - d2) * 180 / Math.PI;
       return deg > 180 ? 360 - deg : deg;
     },
+
+    /* 3D 向量夹角：以 b 为顶点，ba 与 bc 的夹角（度）。
+       三点须在同一坐标系（worldLandmarks 是米制、髋中心为原点）。
+       相比 2D 投影角，它不受相机方位角影响——正对镜头做矢状面动作时，
+       2D 会把髋角压扁到几乎测不出，这是"看起来不准"的主因。 */
+    vectorAngle3D: function (a, b, c) {
+      var ux = a.x - b.x, uy = a.y - b.y, uz = (a.z || 0) - (b.z || 0);
+      var vx = c.x - b.x, vy = c.y - b.y, vz = (c.z || 0) - (b.z || 0);
+      var nu = Math.sqrt(ux * ux + uy * uy + uz * uz);
+      var nv = Math.sqrt(vx * vx + vy * vy + vz * vz);
+      if (!(nu > 1e-9) || !(nv > 1e-9)) return NaN;     // 退化：两点重合
+      var cos = (ux * vx + uy * vy + uz * vz) / (nu * nv);
+      if (cos > 1) cos = 1; else if (cos < -1) cos = -1; // 浮点误差会让 acos 出 NaN
+      return Math.acos(cos) * 180 / Math.PI;
+    },
+
+    /* OneEuro 滤波器：静止时强平滑、快速运动时低延迟。
+       固定 EMA 用一个系数无法同时满足这两种节奏——康复动作偏偏是慢速的，
+       所以固定 alpha 的滞后感特别明显。 */
+    OneEuro: function (minCutoff, beta, dCutoff) {
+      this.minCutoff = (typeof minCutoff === 'number') ? minCutoff : 1.0;
+      this.beta = (typeof beta === 'number') ? beta : 0.007;
+      this.dCutoff = (typeof dCutoff === 'number') ? dCutoff : 1.0;
+      this.xPrev = null;
+      this.dxPrev = 0;
+    },
+
+    /* 动态中位数窗口：抑制单帧跳变，比均值更抗离群值 */
+    MedianWindow: function (n) {
+      this.n = n || 5;
+      this.buf = [];
+    },
+
     minVis: function (lms, idxs) {
       var m = 1;
       for (var i = 0; i < idxs.length; i++) {
@@ -331,12 +375,48 @@
       }
       return m;
     },
+
     smooth: function (prev, next) {
       if (typeof prev !== 'number') return next;
       if (Math.abs(next - prev) < CFG.deadZone) return prev;
       return prev + (next - prev) * CFG.smoothAlpha;
     }
   };
+
+  Logic.OneEuro.prototype._alpha = function (cutoff, dt) {
+    var tau = 1 / (2 * Math.PI * cutoff);
+    return 1 / (1 + tau / dt);
+  };
+
+  Logic.OneEuro.prototype.filter = function (x, dt) {
+    if (typeof x !== 'number' || !isFinite(x)) return this.xPrev;
+    if (!(dt > 0) || dt > 1) dt = 1 / 30;              // 首帧或掉帧时用 30fps 兜底
+    if (this.xPrev === null) { this.xPrev = x; return x; }
+    var dx = (x - this.xPrev) / dt;
+    var aD = this._alpha(this.dCutoff, dt);
+    this.dxPrev = aD * dx + (1 - aD) * this.dxPrev;    // 先平滑速度
+    var cutoff = this.minCutoff + this.beta * Math.abs(this.dxPrev);
+    var a = this._alpha(cutoff, dt);
+    this.xPrev = a * x + (1 - a) * this.xPrev;         // 再按速度自适应平滑位置
+    return this.xPrev;
+  };
+
+  Logic.OneEuro.prototype.reset = function () {
+    this.xPrev = null; this.dxPrev = 0;
+  };
+
+  Logic.MedianWindow.prototype.push = function (v) {
+    if (typeof v !== 'number' || !isFinite(v)) {
+      return this.buf.length ? this.buf[Math.floor(this.buf.length / 2)] : v;
+    }
+    this.buf.push(v);
+    if (this.buf.length > this.n) this.buf.shift();
+    var s = this.buf.slice().sort(function (a, b) { return a - b; });
+    var m = s.length >> 1;
+    return (s.length % 2) ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
+
+  Logic.MedianWindow.prototype.reset = function () { this.buf.length = 0; };
 
   var Detector = {
     state: 'idle',        // idle 等起始位 | armed 已就位 | moving 已达标待复位
@@ -524,35 +604,183 @@
     }
   };
 
-  /* ==================== 角度测量（含左右侧自动选择） ==================== */
+  /* ==================== 角度测量 ====================
+     管线：取点(3D优先) → 向量夹角 → OneEuro 滤波 → 5帧中位数 → 基线校正 → 输出
+     为什么用 3D：单目 2D 投影角会随相机方位角系统性失真，正对镜头做矢状面动作
+     （坐站、屈膝）时髋角被压扁到接近测不出。worldLandmarks 是米制 3D 坐标，
+     算出的夹角与真实关节角同尺度。
+     注意：worldLandmarks 的深度分量只可靠到"能算夹角"，绝不能拿来算位移/距离。 */
   var Measure = {
-    done: { knee: null, hip: null, shoulder: null },
+    done: { knee: null, hip: null, shoulder: null, vis: 0, src: '2d', orient: null },
     vis: 0,
+    src: '2d',
+    offset: { knee: 0, hip: 0, shoulder: 0 },
+    _tPrev: 0,
+    _f: null,
+    _w: null,
+    _baseBuf: null,
+    _hasBase: false,
 
-    update: function (lms) {
+    init: function () {
+      var e = CFG.oneEuro, n = CFG.medianWindow;
+      function mkF() { return new Logic.OneEuro(e.minCutoff, e.beta, e.dCutoff); }
+      this._f = { knee: mkF(), hip: mkF(), shoulder: mkF() };
+      this._w = { knee: new Logic.MedianWindow(n), hip: new Logic.MedianWindow(n),
+                  shoulder: new Logic.MedianWindow(n) };
+      this._tPrev = 0;
+      this._baseBuf = null;
+      this.offset = { knee: 0, hip: 0, shoulder: 0 };
+    },
+
+    /* 切换动作或重新校准时清空中间状态，避免上一组数据串进来 */
+    reset: function () {
+      this.done = { knee: null, hip: null, shoulder: null, vis: 0, src: this.src, orient: null };
+      this.vis = 0;
+      this.init();
+      Log.add('measure', '已重置');
+    },
+
+    /* 开始基线采样。调用前 init() 会清掉旧 offset，保证采样从干净状态开始。 */
+    startBaseline: function () {
+      this.init();
+      this._baseBuf = { knee: [], hip: [], shoulder: [] };
+      this._baseStart = Date.now();
+      this._baseSeen = 0;
+      Log.add('measure', '开始基线采样，目标 ' + CFG.baselineFrames + ' 帧 / 最长 ' +
+                         (CFG.baselineTimeoutMs / 1000) + ' 秒');
+    },
+
+    isSampling: function () { return this._baseBuf !== null; },
+
+    /* 采样超时检查：必须由主循环每帧调用，**不能**放在 update() 里。
+       update() 只在检测到人时才执行，而"一直检测不到人"恰恰是最需要超时的情形——
+       放错位置会让校准永久卡住，用户看到的是画面一直停在"站立校准"。 */
+    checkBaselineTimeout: function () {
+      if (this._baseBuf === null) return false;
+      if (Date.now() - this._baseStart <= CFG.baselineTimeoutMs) return false;
+      Log.add('measure', '采样超时（只得 ' + this._baseBuf.hip.length + ' 帧），放弃校准');
+      this.finishBaseline();
+      return true;
+    },
+
+    finishBaseline: function () {
+      var buf = this._baseBuf;
+      if (!buf) return null;
+      this._baseBuf = null;
+
+      function med(arr) {
+        if (!arr.length) return null;
+        var s = arr.slice().sort(function (a, b) { return a - b; });
+        var m = s.length >> 1;
+        return (s.length % 2) ? s[m] : (s[m - 1] + s[m]) / 2;
+      }
+
+      // 只校正 hip 与 knee：站立时这两个关节接近伸直（≈175°），参考值明确。
+      // 肩角在垂手站立时本来就只有 10° 左右（躯干与上臂同向），参考值不适用，
+      // 强行校正会把手臂角度整个平移掉。
+      var b = { hip: med(buf.hip), knee: med(buf.knee) };
+      var ref = CFG.baseRefAngle, lim = CFG.baselineMaxAdjust;
+      var off = { knee: 0, hip: 0, shoulder: 0 };
+      var applied = 0;
+
+      for (var key in b) {
+        if (b[key] === null) continue;
+        var d = ref - b[key];
+        // 偏离过大说明采样时没站直或没检测到，宁可不校正也不要引入错误偏移
+        if (Math.abs(d) <= lim) { off[key] = d; applied++; }
+        else Log.add('measure', key + ' 基线偏离 ' + d.toFixed(1) + '°，超限忽略');
+      }
+
+      if (!applied) {
+        Log.add('measure', '基线校准失败：采样时可能没站直');
+        this._hasBase = false;
+        return null;
+      }
+
+      this.offset = off;
+      this._hasBase = true;
+      Log.add('measure', '基线完成 hip' + off.hip.toFixed(1) +
+                         ' knee' + off.knee.toFixed(1) +
+                         ' shoulder' + off.shoulder.toFixed(1));
+      return { base: b, offset: off };
+    },
+
+    /* 朝向：矢状面动作的临床测量规范是侧位拍摄。
+       正面站立时左右髋在 x 上分离、z 上接近；侧身时相反。
+       返回 0~1，越小越像侧身；null 表示无法判断。 */
+    orientation: function (lms, world) {
+      var lh, rh;
+      if (world && world.length >= 33) {
+        lh = world[SIDE.L.HIP]; rh = world[SIDE.R.HIP];
+        var dx = Math.abs(lh.x - rh.x), dz = Math.abs(lh.z - rh.z);
+        if (dx + dz > 1e-6) return dx / (dx + dz);
+      }
+      lh = lms[SIDE.L.HIP]; rh = lms[SIDE.R.HIP];
+      var ls = lms[SIDE.L.SH], rs = lms[SIDE.R.SH];
+      var hipW = Math.abs(lh.x - rh.x), shoW = Math.abs(ls.x - rs.x);
+      if (shoW > 1e-6) return Math.min(1, hipW / shoW);
+      return null;
+    },
+
+    update: function (lms, world, ts) {
+      if (!this._f) this.init();
+
+      var useWorld = !!(world && world.length >= 33);
+      this.src = useWorld ? '3d' : '2d';
+      var geo = useWorld ? world : lms;
+
       var vw = Pose.video.videoWidth || 1, vh = Pose.video.videoHeight || 1;
-      var k = vh / vw;                    // 归一化坐标的横竖比例修正
-      function p(i) { return { x: lms[i].x, y: lms[i].y * k }; }
+      var k = vh / vw;                 // 2D 归一化坐标必须修横竖比例，否则角度系统偏斜
+
+      function pt(i) {
+        var q = geo[i];
+        return useWorld ? { x: q.x, y: q.y, z: q.z || 0 }
+                        : { x: q.x, y: q.y * k, z: 0 };
+      }
 
       function angleOf(S) {
-        var knee = Logic.jointAngle(p(S.HIP), p(S.KNEE), p(S.ANK));
-        var hip = Logic.jointAngle(p(S.SH), p(S.HIP), p(S.KNEE));
-        var sh = Logic.jointAngle(p(S.HIP), p(S.SH), p(S.EL));
-        var vis = Math.min(
-          Logic.minVis(lms, [S.HIP, S.KNEE, S.ANK]),
-          Logic.minVis(lms, [S.SH, S.HIP, S.KNEE])
-        );
-        return { knee: knee, hip: hip, shoulder: sh, vis: vis };
+        return {
+          knee: Logic.vectorAngle3D(pt(S.HIP), pt(S.KNEE), pt(S.ANK)),
+          hip: Logic.vectorAngle3D(pt(S.SH), pt(S.HIP), pt(S.KNEE)),
+          shoulder: Logic.vectorAngle3D(pt(S.HIP), pt(S.SH), pt(S.EL)),
+          vis: Math.min(Logic.minVis(lms, [S.HIP, S.KNEE, S.ANK]),
+                        Logic.minVis(lms, [S.SH, S.HIP, S.KNEE]))
+        };
       }
 
       var L = angleOf(SIDE.L), R = angleOf(SIDE.R);
       var pick = L.vis >= R.vis ? L : R;
 
+      var dt = this._tPrev ? (ts - this._tPrev) / 1000 : 0;
+      this._tPrev = ts;
+
+      var raw = { knee: pick.knee, hip: pick.hip, shoulder: pick.shoulder };
+      var base = this._baseBuf;
+
+      for (var key in raw) {
+        var v = raw[key];
+        if (!isFinite(v)) continue;                  // 本帧该角无效，保留上一次结果
+        var fv = this._f[key].filter(v, dt);
+        var mv = this._w[key].push(fv);
+        if (base && isFinite(mv)) base[key].push(mv);
+        this.done[key] = mv + this.offset[key];
+      }
+
+      if (base) {
+        // 两种收尾方式：采够帧数，或超时放行。
+        // 超时是必须的——若一直检测不到有效姿态，不能把用户永久卡在校准阶段。
+        if (base.hip.length >= CFG.baselineFrames) {
+          this.finishBaseline();
+        } else if (Date.now() - this._baseStart > CFG.baselineTimeoutMs) {
+          Log.add('measure', '采样超时，仅得 ' + base.hip.length + ' 帧，放弃校准');
+          this.finishBaseline();
+        }
+      }
+
       this.vis = pick.vis;
-      this.done.knee = Logic.smooth(this.done.knee, pick.knee);
-      this.done.hip = Logic.smooth(this.done.hip, pick.hip);
-      this.done.shoulder = Logic.smooth(this.done.shoulder, pick.shoulder);
-      this.done.vis = pick.vis;   // evaluate 读的是返回值 m.vis，必须带出来
+      this.done.vis = pick.vis;
+      this.done.src = this.src;
+      this.done.orient = this.orientation(lms, world);
       return this.done;
     }
   };
@@ -725,7 +953,7 @@
             var id = btn.getAttribute('data-act');
             var act = ACTIONS.filter(function (a) { return a.id === id; })[0];
             Detector.setAction(act);
-            Measure.done = { knee: null, hip: null, shoulder: null };
+            Measure.reset();          // 连滤波器与中位数窗口一起清，否则会串上一组的数据
             UI.renderCounter(); UI.renderPeak();
             UI.hint(act.name + '：' + act.desc, true);
             setTimeout(function () { UI.hint(''); }, 3000);
@@ -785,7 +1013,10 @@
         // 复位按钮：否则停止后遮罩重新出现时，按钮仍停在「正在启动…」且被禁用
         btn.textContent = '开始训练';
         btn.disabled = false;
-        UI.setText('phase', Detector.phaseText());
+        // 先站立校准再判定：把个体与机型的固定偏差归一化掉
+        Measure.startBaseline();
+        this._toldBase = false;
+        UI.setText('phase', '站立校准');
         Log.add('start', '进入训练，共 ' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒');
         requestAnimationFrame(function (t) { App.loop(t); });
       } catch (e) {
@@ -816,6 +1047,9 @@
     loop: function (ts) {
       if (!Pose.running) return;
 
+      // 每帧先查校准超时：这一步不依赖是否检测到人
+      Measure.checkBaselineTimeout();
+
       var fps = Pose.fps(ts);
       if (fps) UI.setText('fpsVal', fps.toFixed(0));
 
@@ -824,13 +1058,16 @@
         try { res = Pose.landmarker.detectForVideo(Pose.video, ts); } catch (e) { res = null; }
 
         var lms = res && res.landmarks && res.landmarks[0];
+        var world = res && res.worldLandmarks && res.worldLandmarks[0];
         if (lms && lms.length >= 33) {
           Pose.draw(lms);
-          var m = Measure.update(lms);
+          var m = Measure.update(lms, world, ts);
           App.evaluate(m);
         } else {
           Pose.ctx.clearRect(0, 0, Pose._cw, Pose._ch);
           UI.setText('visVal', '--');
+          // 校准期间没检测到人时，状态仍显示「站立校准」，超时后才转「没看到人」
+          UI.setText('phase', Measure.isSampling() ? '站立校准' : '没看到人');
           UI.hint('没看到人。请退后一点，让全身进入画面。');
         }
       }
@@ -843,12 +1080,33 @@
       UI.setAngle(UI.el.cellKnee, ok ? m.knee : null, !ok);
       UI.setAngle(UI.el.cellHip, ok ? m.hip : null, !ok);
       UI.setAngle(UI.el.cellShoulder, ok ? m.shoulder : null, !ok);
-      UI.setText('visVal', m.vis.toFixed(2));
+      UI.setText('visVal', ok ? m.vis.toFixed(2) : '--');
+
+      // 基线校准阶段：只显示角度，不做动作判定。
+      // 顺手在这里教用户侧身——站立时判断朝向最准，等开始动了再纠正就晚了。
+      if (Measure.isSampling()) {
+        UI.setText('phase', '站立校准');
+        if (!ok) {
+          UI.hint('看不到人，请退后一点让全身进入画面');
+        } else if (m.orient !== null && m.orient > CFG.orientFront) {
+          UI.hint('请侧身对镜头：让左右肩重叠，再自然站直');
+        } else {
+          UI.hint('自然站直、双手下垂，保持约 3 秒');
+        }
+        return;
+      }
 
       if (!ok) {
         UI.setText('phase', '看不清');
-        UI.hint('看不清。请正对摄像头、保证光线，并让全身进入画面。');
+        UI.hint('看不清。请侧身对镜头、保证光线，并让全身进入画面。');
         return;
+      }
+
+      // 校准刚成功的那一帧，给一次明确反馈——否则用户不知道站立那几秒算不算数
+      if (Measure._hasBase && !this._toldBase) {
+        this._toldBase = true;
+        Voice.say('校准完成，可以开始训练了');
+        UI.hint('校准完成');
       }
 
       var r = Detector.feed(m);
