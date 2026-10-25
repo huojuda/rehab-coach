@@ -557,11 +557,81 @@
     }
   };
 
-  /* ==================== 语音（任务4 会替换成云端 TTS） ==================== */
+  /* ==================== 语音播报 ====================
+     用浏览器自带的 speechSynthesis：零成本、离线可用、不需要任何密钥。
+     老人训练时不一定盯着屏幕，所以关键提示必须有声音。
+     已知限制：华为等无 GMS 机型可能没有中文语音（voices 为空），此时静默降级为纯视觉提示。 */
   var Voice = {
+    on: false,
+    voice: null,
+    _unlocked: false,
+    _last: '',
+    _lastAt: 0,
+
+    init: function () {
+      if (this.on) return;   // 重复点击不重复初始化
+      if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+        Log.add('voice', '本浏览器不支持语音合成');
+        return;
+      }
+      var self = this;
+      function pick() {
+        var vs = [];
+        try { vs = speechSynthesis.getVoices() || []; } catch (e) { vs = []; }
+        self.voice = null;
+        for (var i = 0; i < vs.length; i++) {
+          if (/^zh([-_])(CN|Hans)/i.test(vs[i].lang)) { self.voice = vs[i]; break; }
+        }
+        if (!self.voice) {
+          for (var j = 0; j < vs.length; j++) {
+            if (/^zh/i.test(vs[j].lang)) { self.voice = vs[j]; break; }
+          }
+        }
+        Log.add('voice', '语音 ' + vs.length + ' 个' + (self.voice ? '，选用 ' + self.voice.name : '，无中文语音'));
+      }
+      pick();
+      // Chrome 的 voices 是异步加载的，首次可能为空
+      speechSynthesis.onvoiceschanged = pick;
+      this.on = true;
+    },
+
+    // 必须在用户手势的同步调用栈里执行一次，否则手机端会静音
+    unlock: function () {
+      if (this._unlocked || !this.on) return;
+      try {
+        var u = new SpeechSynthesisUtterance(' ');
+        u.volume = 0;
+        speechSynthesis.speak(u);
+        this._unlocked = true;
+        Log.add('voice', '已解锁音频');
+      } catch (e) {
+        Log.add('voice', '解锁失败 ' + e.message);
+      }
+    },
+
     say: function (text) {
-      // 占位：先只在画面上提示，接入云端 TTS 后在这里播放音频
       UI.hint(text);
+      if (!this.on || !this._unlocked || !text) return;
+      // 同一句话 1.2 秒内不重复，避免状态抖动导致复读
+      var now = Date.now();
+      if (text === this._last && now - this._lastAt < 1200) return;
+      this._last = text; this._lastAt = now;
+      try {
+        speechSynthesis.cancel();     // 新提示打断旧提示，避免排队堆积
+        var u = new SpeechSynthesisUtterance(text);
+        u.lang = 'zh-CN';
+        u.rate = 0.95;
+        u.pitch = 1;
+        if (this.voice) u.voice = this.voice;
+        u.onerror = function (e) {
+          if (e && e.error && e.error !== 'interrupted' && e.error !== 'canceled') {
+            Log.add('voice', '朗读失败 ' + e.error);
+          }
+        };
+        speechSynthesis.speak(u);
+      } catch (e) {
+        Log.add('voice', '朗读异常 ' + e.message);
+      }
     }
   };
 
@@ -663,6 +733,10 @@
     start: async function () {
       if (this._starting) return;
       this._starting = true;
+
+      // 音频解锁必须发生在点击事件的同步调用栈里，await 之后就失去手势上下文了
+      Voice.init();
+      Voice.unlock();
 
       var t0 = Date.now();
       var btn = UI.el.btnStart;
@@ -792,7 +866,7 @@
   /* 调试出口：便于用脚本做逻辑回归测试，不影响页面功能 */
   window.__DEV = { Logic: Logic, Detector: Detector, ACTIONS: ACTIONS,
                    Measure: Measure, CFG: CFG, Log: Log, Preload: Preload,
-                   Pose: Pose, App: App, UI: UI };
+                   Pose: Pose, App: App, UI: UI, Voice: Voice };
 
   App.boot();
 })();
