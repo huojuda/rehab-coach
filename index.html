@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0e1116">
+<title>康复动作教练 · 原型 v0.2</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --line:#2a313c;
+    --txt:#e8edf4; --dim:#8b97a8;
+    --ok:#2ea043; --warn:#d29922; --bad:#da3633; --accent:#3b8eea;
+    --safe-b: env(safe-area-inset-bottom, 0px);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+  #app{display:flex;flex-direction:column;height:100%;max-width:560px;margin:0 auto}
+
+  header{display:flex;align-items:center;justify-content:space-between;
+    padding:12px 16px;border-bottom:1px solid var(--line);flex:0 0 auto}
+  header h1{margin:0;font-size:15px;font-weight:500;letter-spacing:.3px}
+  #badge{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
+
+  #stage{position:relative;flex:1 1 auto;min-height:0;background:#000;overflow:hidden}
+  #cam,#overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+    transform:scaleX(-1)}
+  #overlay{pointer-events:none}
+
+  #hint{position:absolute;left:12px;right:12px;top:12px;padding:8px 12px;border-radius:8px;
+    background:rgba(14,17,22,.85);font-size:13px;line-height:1.5;color:var(--txt);
+    border:1px solid var(--line);display:none;z-index:3}
+  #hint.show{display:block}
+
+  #phase{position:absolute;left:12px;bottom:12px;padding:6px 12px;border-radius:999px;
+    background:rgba(14,17,22,.8);border:1px solid var(--line);font-size:12px;color:var(--dim);
+    z-index:3}
+
+  #startMask{position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:18px;background:rgba(14,17,22,.95);
+    padding:24px;text-align:center;z-index:2}
+  #startMask.hide{display:none}
+  #introP{margin:0;font-size:13px;line-height:1.7;color:var(--dim);max-width:320px}
+  #btnStart{padding:16px 40px;font-size:17px;font-weight:500;border:0;border-radius:12px;
+    background:var(--accent);color:#fff;font-family:inherit}
+  #btnStart:disabled{background:#2b3444;color:var(--dim)}
+
+  #loadBox{width:100%;max-width:300px;display:none}
+  #loadBox.show{display:block}
+  #loadBar{height:6px;border-radius:3px;background:#0e1116;overflow:hidden;
+    border:1px solid var(--line)}
+  #loadBarIn{height:100%;width:0;background:var(--accent);transition:width .2s}
+  #loadTxt{margin-top:9px;font-size:12.5px;color:var(--txt);line-height:1.6}
+  #loadTxt.err{color:#f09595;text-align:left;max-width:320px;margin-left:auto;margin-right:auto}
+  #loadSub{margin-top:4px;font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums}
+  #fallbackLink{font-size:12px;color:var(--accent);text-decoration:underline;display:none}
+  #fallbackLink.show{display:block}
+
+  #wbLog{position:fixed;left:0;right:0;bottom:0;max-height:34vh;overflow:auto;display:none;
+    background:rgba(0,0,0,.88);color:#9fe1cb;font:11px/1.5 ui-monospace,Consolas,monospace;
+    padding:8px 10px;white-space:pre-wrap;z-index:99;border-top:1px solid #2a313c}
+
+  #panel{flex:0 0 auto;padding:12px 16px calc(12px + var(--safe-b));
+    border-top:1px solid var(--line);background:var(--panel)}
+
+  #chips{display:flex;gap:8px;margin-bottom:12px}
+  .chip{flex:1;padding:9px 6px;border-radius:9px;border:1px solid var(--line);
+    background:#0e1116;color:var(--dim);font-size:12.5px;font-family:inherit;text-align:center}
+  .chip.on{border-color:var(--accent);color:#fff;background:#1b3252}
+
+  #counter{display:flex;align-items:baseline;justify-content:center;gap:8px;margin:2px 0 6px}
+  #repNow{font-size:44px;font-weight:500;font-variant-numeric:tabular-nums;line-height:1}
+  #repGoal{font-size:14px;color:var(--dim)}
+  #repGoal b{color:var(--txt);font-weight:500}
+
+  #bar{height:5px;border-radius:3px;background:#0e1116;overflow:hidden;margin-bottom:12px}
+  #barIn{height:100%;width:0;background:var(--accent);transition:width .25s}
+
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .cell{background:#0e1116;border:1px solid var(--line);border-radius:9px;
+    padding:8px 10px;text-align:center}
+  .cell .k{font-size:10.5px;color:var(--dim);letter-spacing:.4px}
+  .cell .v{font-size:23px;font-weight:500;font-variant-numeric:tabular-nums;
+    line-height:1.25;margin-top:1px}
+  .cell .v small{font-size:11px;color:var(--dim);font-weight:400;margin-left:1px}
+  .cell.mute .v{color:var(--dim)}
+  .row2{display:flex;justify-content:space-between;margin-top:9px;
+    font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>康复动作教练</h1>
+    <span id="badge">v0.2</span>
+  </header>
+
+  <div id="stage">
+    <video id="cam" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+    <div id="hint"></div>
+    <div id="phase">待开始</div>
+    <div id="startMask">
+      <div id="loadBox">
+        <div id="loadBar"><div id="loadBarIn"></div></div>
+        <div id="loadTxt">准备就绪</div>
+        <div id="loadSub"></div>
+      </div>
+      <p id="introP">把手机立在身前 1.5 至 2 米处，让全身进入画面。<br>
+         画面只在本机处理，不上传。</p>
+      <button id="btnStart">开始训练</button>
+      <a id="fallbackLink" href="#" target="_blank" rel="noopener">若此处打不开摄像头，点此在浏览器新窗口打开</a>
+    </div>
+  </div>
+
+  <section id="panel">
+    <div id="chips">
+      <button class="chip on" data-act="sitstand">坐站转移</button>
+      <button class="chip" data-act="legraise">直腿抬高</button>
+      <button class="chip" data-act="kneeflex">屈膝</button>
+    </div>
+
+    <div id="counter">
+      <span id="repNow">0</span>
+      <span id="repGoal">/ <b>10</b> 次</span>
+    </div>
+    <div id="bar"><div id="barIn"></div></div>
+
+    <div class="grid">
+      <div class="cell" id="cellKnee"><div class="k">膝关节</div><div class="v">--<small>°</small></div></div>
+      <div class="cell" id="cellHip"><div class="k">髋关节</div><div class="v">--<small>°</small></div></div>
+      <div class="cell" id="cellShoulder"><div class="k">肩关节</div><div class="v">--<small>°</small></div></div>
+    </div>
+    <div class="row2">
+      <span>可见度 <b id="visVal">--</b></span>
+      <span>帧率 <b id="fpsVal">--</b></span>
+      <span>峰值 <b id="peakVal">--</b></span>
+    </div>
+  </section>
+</div>
+<div id="wbLog"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ==================== 配置 ==================== */
+  var CFG = {
+    // 模型档位：full 的定位精度比 lite 高 5.3 个百分点（PCK@0.2 90.2% → 95.5%），
+    // 体积 5.5 → 9.0 MB，而 GPU 路径仍是 40 FPS —— 性价比拐点在 full，所以默认用它。
+    modelUrl: './assets/model/pose_landmarker_full.task',
+    modelBytes: 9.4e6,
+    modelFallbackUrl: './assets/model/pose_landmarker_lite.task',
+    modelFallbackBytes: 5.51e6,
+    wasmDir: './assets/mp/wasm',
+    bundleUrl: './assets/mp/vision_bundle.mjs',
+    visThreshold: 0.65,   // 关键点可见度低于此值不判定
+    smoothAlpha: 0.35,    // 指数平滑：越小越稳、越迟钝
+    deadZone: 1.5,        // 角度变化小于此值不更新（抖动死区）
+    repGoal: 10           // 每组次数
+  };
+
+  /* ==================== 诊断日志 ====================
+     地址加 ?debug=1 时，页面底部实时显示最近日志。
+     排查"点了没反应"必须能看到 name / message，否则只能猜。 */
+  var Log = {
+    on: /[?&]debug=1/.test(location.search),
+    buf: [],
+    el: null,
+    attach: function (el) {
+      this.el = el;
+      if (!this.on) return;
+      el.style.display = 'block';
+      el.textContent = '(等待日志)';
+    },
+    add: function (tag, msg) {
+      var t = new Date().toTimeString().slice(0, 8);
+      var line = t + ' [' + tag + '] ' + msg;
+      this.buf.push(line);
+      if (this.buf.length > 40) this.buf.shift();
+      if (this.on && this.el) this.el.textContent = this.buf.slice(-14).join('\n');
+      if (console && console.log) console.log(line);
+    }
+  };
+
+  /* ==================== 资源预载（真实进度） ====================
+     MediaPipe 自己下载时不报进度，所以这里先把模型取成本地 Blob，
+     同时把 wasm 取一遍预热浏览器缓存，之后 MediaPipe 再取就是缓存命中。 */
+  var Preload = {
+    total: 9.4e6 + 13.53e6,   // full 模型 + simd wasm（换档后同步，否则进度条比例错）
+    done: 0,
+    modelBlobUrl: null,
+    modelTier: null,          // 'full' | 'lite'，实际加载到哪一档
+    onProgress: null,
+
+    _tick: function () {
+      if (this.onProgress) this.onProgress(Math.min(0.98, this.done / this.total));
+    },
+
+    fetchOne: async function (url, fallbackSize) {
+      var res = await fetch(url, { cache: 'default' });
+      if (!res.ok) throw new Error('HTTP ' + res.status + ' · ' + url);
+      var len = Number(res.headers.get('Content-Length')) || fallbackSize || 0;
+
+      if (!res.body || !res.body.getReader) {          // 老浏览器兜底
+        var b = await res.blob();
+        this.done += b.size; this._tick();
+        return b;
+      }
+      var reader = res.body.getReader(), chunks = [], got = 0;
+      for (;;) {
+        var r = await reader.read();
+        if (r.done) break;
+        chunks.push(r.value);
+        got += r.value.length;
+        this.done += r.value.length;
+        this._tick();
+      }
+      Log.add('preload', url.split('/').pop() + ' ' + Math.round(got / 1024) + 'KB' +
+                        (len && Math.abs(len - got) > len * 0.02 ? ' (头声明 ' + Math.round(len / 1024) + 'KB)' : ''));
+      return new Blob(chunks);
+    },
+
+    run: function () {
+      var self = this;
+      return (async function () {
+        // 优先取 full；取不到就降级 lite，不让整条启动链因为一个模型文件断掉
+        try {
+          var model = await self.fetchOne(CFG.modelUrl, CFG.modelBytes);
+          self.modelBlobUrl = URL.createObjectURL(model);
+          self.modelTier = 'full';
+        } catch (e) {
+          Log.add('preload', 'full 模型获取失败，降级 lite：' + e.message + ' —— ' + JSON.stringify(e.name));
+          // 已累计的字节作废，进度按 lite 的体量重算
+          self.done = 0;
+          self.total = CFG.modelFallbackBytes + 13.53e6;
+          var m2 = await self.fetchOne(CFG.modelFallbackUrl, CFG.modelFallbackBytes);
+          self.modelBlobUrl = URL.createObjectURL(m2);
+          self.modelTier = 'lite';
+        }
+        // 预热 wasm：失败不致命，MediaPipe 会自己重试
+        try { await self.fetchOne(CFG.wasmDir + '/vision_wasm_internal.js', 3.4e5); } catch (e) { Log.add('preload', 'js 预热失败 ' + e.message); }
+        try { await self.fetchOne(CFG.wasmDir + '/vision_wasm_internal.wasm', 13.53e6); } catch (e) { Log.add('preload', 'wasm 预热失败 ' + e.message); }
+        Log.add('preload', '模型档位 · ' + self.modelTier);
+        if (self.onProgress) self.onProgress(1);
+      })();
+    }
+  };
+
+  /* ==================== 错误翻译与超时 ==================== */
+  function describeError(e) {
+    var n = e && e.name, m = (e && e.message) ? e.message : String(e);
+    if (n === 'NotAllowedError' || n === 'SecurityError')
+      return '摄像头被拒绝或不可用。请点地址栏左侧的权限图标，把摄像头改为「允许」后重试。';
+    if (n === 'NotFoundError' || n === 'OverconstrainedError')
+      return '没有找到可用的摄像头。请确认设备有摄像头，且没被其他程序占用。';
+    if (n === 'NotReadableError' || n === 'AbortError')
+      return '摄像头被其他程序占用（例如会议软件）。请关闭后重试。';
+    if (/Failed to fetch|NetworkError|Load failed|HTTP \d+/.test(m))
+      return '资源加载失败：' + m + '。请确认 assets 目录存在且没有 404。';
+    if (/超时/.test(m)) return m;
+    return '启动失败：' + m;
+  }
+
+  function withTimeout(p, ms, msg) {
+    return Promise.race([
+      p,
+      new Promise(function (_, rej) {
+        setTimeout(function () {
+          var e = new Error(msg + '，仍未完成');
+          e.name = 'TimeoutError';
+          rej(e);
+        }, ms);
+      })
+    ]);
+  }
+
+  /* ==================== 关键点索引 ==================== */
+  var SIDE = {
+    L: { SH: 11, EL: 13, WR: 15, HIP: 23, KNEE: 25, ANK: 27 },
+    R: { SH: 12, EL: 14, WR: 16, HIP: 24, KNEE: 26, ANK: 28 }
+  };
+
+  /* ==================== 三个康复动作 ====================
+     armTest：判断"是否回到起始位"，满足后开始等一次动作
+     hitTest：判断"是否到达达标位"，满足即计 1 次
+     两个阈值之间留出回差，防止在临界点反复计数
+  ==================================================== */
+  var ACTIONS = [
+    {
+      id: 'sitstand', name: '坐站转移', metric: 'hip', unit: '°',
+      desc: '从坐姿站起，再慢慢坐下',
+      armTest: function (m) { return m.hip < 118; },      // 坐着
+      hitTest: function (m) { return m.hip > 158; },      // 站直
+      tipArmed: '已就位，请起立',
+      tipHit: '站直了，很好'
+    },
+    {
+      id: 'legraise', name: '直腿抬高', metric: 'hip', unit: '°',
+      desc: '坐直，一条腿伸直后抬离地面',
+      armTest: function (m) { return m.hip < 122 && m.knee > 155; },  // 坐姿且腿伸直
+      hitTest: function (m) { return m.hip > 148 && m.knee > 145; },  // 抬起来且没弯膝
+      tipArmed: '腿伸直，准备抬',
+      tipHit: '抬到位了'
+    },
+    {
+      id: 'kneeflex', name: '屈膝', metric: 'knee', unit: '°',
+      desc: '坐姿，把小腿向后弯再伸直',
+      armTest: function (m) { return m.knee > 158; },      // 伸直
+      hitTest: function (m) { return m.knee < 105; },      // 屈到位
+      tipArmed: '腿伸直了，请屈膝',
+      tipHit: '屈到位了'
+    }
+  ];
+
+  /* ==================== Logic：纯计算 ==================== */
+  var Logic = {
+    dirAngle: function (p, q) { return Math.atan2(q.y - p.y, q.x - p.x); },
+    /* 三个点已在同一等比坐标系下，返回 b 处夹角（度） */
+    jointAngle: function (a, b, c) {
+      var d1 = this.dirAngle(b, a), d2 = this.dirAngle(b, c);
+      var deg = Math.abs(d1 - d2) * 180 / Math.PI;
+      return deg > 180 ? 360 - deg : deg;
+    },
+    minVis: function (lms, idxs) {
+      var m = 1;
+      for (var i = 0; i < idxs.length; i++) {
+        var v = lms[idxs[i]].visibility;
+        if (typeof v !== 'number') v = 1;
+        if (v < m) m = v;
+      }
+      return m;
+    },
+    smooth: function (prev, next) {
+      if (typeof prev !== 'number') return next;
+      if (Math.abs(next - prev) < CFG.deadZone) return prev;
+      return prev + (next - prev) * CFG.smoothAlpha;
+    }
+  };
+
+  var Detector = {
+    state: 'idle',        // idle 等起始位 | armed 已就位 | moving 已达标待复位
+    count: 0,
+    peak: null,
+    action: ACTIONS[0],
+
+    reset: function () {
+      this.state = 'idle'; this.count = 0; this.peak = null;
+    },
+
+    setAction: function (a) {
+      this.action = a;
+      this.reset();
+    },
+
+    /* 返回 {hit:boolean, reset:boolean} 供 UI 做提示 */
+    feed: function (m) {
+      var act = this.action, v = m[act.metric];
+      var out = { hit: false, armed: false };
+
+      if (this.peak === null || v > this.peak) this.peak = v;
+
+      switch (this.state) {
+        case 'idle':
+          if (act.armTest(m)) { this.state = 'armed'; out.armed = true; }
+          break;
+        case 'armed':
+          if (act.hitTest(m)) {
+            this.count++; this.state = 'moving'; out.hit = true;
+          }
+          break;
+        case 'moving':
+          if (act.armTest(m)) { this.state = 'armed'; }
+          break;
+      }
+      return out;
+    },
+
+    phaseText: function () {
+      if (this.state === 'idle') return '找起始位';
+      if (this.state === 'armed') return '已就位';
+      return '回起始位';
+    }
+  };
+
+  /* ==================== Pose ==================== */
+  var Pose = {
+    landmarker: null, connections: null, video: null, canvas: null, ctx: null,
+    tier: null,   // 实际生效的模型档位，调试面板与报告都用得上
+    running: false, lastTs: -1, fpsBuf: [], _cw: 0, _ch: 0,
+
+    init: function (video, canvas) {
+      this.video = video; this.canvas = canvas; this.ctx = canvas.getContext('2d');
+    },
+
+    load: async function () {
+      var vision = await import(CFG.bundleUrl);
+      Log.add('pose', '运行时已加载');
+      var fileset = await vision.FilesetResolver.forVisionTasks(CFG.wasmDir);
+      Log.add('pose', 'wasm 就绪');
+
+      function opts(delegate, modelPath) {
+        return {
+          baseOptions: {
+            // 显式传入的路径 > 预载好的 Blob > 直接按 URL 取
+            modelAssetPath: modelPath || Preload.modelBlobUrl || CFG.modelUrl,
+            delegate: delegate
+          },
+          runningMode: 'VIDEO',
+          numPoses: 1,
+          minPoseDetectionConfidence: 0.5,
+          minPosePresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5
+        };
+      }
+
+      // 三级回退：full+GPU → full+CPU → lite+CPU
+      // 前两级是同一模型换 delegate；第三级是模型降档，用于显存/内存不足的机型。
+      // 预载已经降级成 lite 时不必再传路径，直接用它的 Blob 即可。
+      var litePath = (Preload.modelTier === 'lite') ? null : CFG.modelFallbackUrl;
+      var combos = [
+        { delegate: 'GPU', path: null,      note: 'GPU' },
+        { delegate: 'CPU', path: null,      note: 'CPU' },
+        { delegate: 'CPU', path: litePath,  note: 'CPU · lite 降级' }
+      ];
+      var lastErr = null;
+      for (var ci = 0; ci < combos.length; ci++) {
+        var c = combos[ci];
+        try {
+          this.landmarker = await vision.PoseLandmarker.createFromOptions(fileset, opts(c.delegate, c.path));
+          Log.add('pose', '引擎就绪 · ' + c.note);
+          this.tier = (ci === 2) ? 'lite' : (Preload.modelTier || 'full');
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          Log.add('pose', c.note + ' 失败：' + e.message);
+        }
+      }
+      if (lastErr) throw lastErr;
+      Log.add('pose', '实际档位 · ' + this.tier);
+      // POSE_CONNECTIONS 是 {start,end} 对象数组，统一归一化成 [a,b] 二元组，
+      // 否则 connections[c][0] 恒为 undefined，draw 里 lms[undefined] 会直接抛错。
+      this.connections = (vision.PoseLandmarker.POSE_CONNECTIONS || []).map(function (c) {
+        return Array.isArray(c) ? [c[0], c[1]] : [c.start, c.end];
+      });
+      Log.add('pose', '骨架连线 ' + this.connections.length + ' 条');
+    },
+
+    startCamera: async function () {
+      var stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+      this.video.srcObject = stream;
+      await this.video.play();
+    },
+
+    resize: function () {
+      var r = this.video.getBoundingClientRect();
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      this.canvas.width = Math.round(r.width * dpr);
+      this.canvas.height = Math.round(r.height * dpr);
+      this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      this._cw = r.width; this._ch = r.height;
+    },
+
+    /* object-fit:cover 下把归一化坐标映射到画布 */
+    project: function (lm) {
+      var vw = this.video.videoWidth || 1, vh = this.video.videoHeight || 1;
+      var scale = Math.max(this._cw / vw, this._ch / vh);
+      var dw = vw * scale, dh = vh * scale;
+      return {
+        x: lm.x * dw + (this._cw - dw) / 2,
+        y: lm.y * dh + (this._ch - dh) / 2
+      };
+    },
+
+    draw: function (lms) {
+      var ctx = this.ctx;
+      ctx.clearRect(0, 0, this._cw, this._ch);
+      // 没检测到人、或只露出半身时，landmarker 可能返回存在但不足 33 点的数组。
+      // 直接按下标取会拿到 undefined，因此先做长度校验。
+      if (!lms || lms.length < 33) return;
+      var pts = [], i;
+      for (i = 0; i < lms.length; i++) pts.push(this.project(lms[i]));
+
+      ctx.lineWidth = 4; ctx.lineCap = 'round';
+      for (var c = 0; c < this.connections.length; c++) {
+        var a = this.connections[c][0], b = this.connections[c][1];
+        var va = lms[a].visibility, vb = lms[b].visibility;
+        if (typeof va !== 'number') va = 1;
+        if (typeof vb !== 'number') vb = 1;
+        ctx.strokeStyle = (va > CFG.visThreshold && vb > CFG.visThreshold)
+          ? 'rgba(59,142,234,.92)' : 'rgba(139,151,168,.3)';
+        ctx.beginPath();
+        ctx.moveTo(pts[a].x, pts[a].y); ctx.lineTo(pts[b].x, pts[b].y);
+        ctx.stroke();
+      }
+      for (i = 0; i < pts.length; i++) {
+        var v = lms[i].visibility;
+        if (typeof v !== 'number') v = 1;
+        if (v < CFG.visThreshold * 0.6) continue;
+        ctx.beginPath();
+        ctx.arc(pts[i].x, pts[i].y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = v > CFG.visThreshold ? '#e8edf4' : 'rgba(139,151,168,.5)';
+        ctx.fill();
+      }
+    },
+
+    fps: function (ts) {
+      if (this.lastTs > 0) {
+        var dt = ts - this.lastTs;
+        if (dt > 0) {
+          this.fpsBuf.push(1000 / dt);
+          if (this.fpsBuf.length > 30) this.fpsBuf.shift();
+        }
+      }
+      this.lastTs = ts;
+      if (!this.fpsBuf.length) return 0;
+      var s = 0;
+      for (var i = 0; i < this.fpsBuf.length; i++) s += this.fpsBuf[i];
+      return s / this.fpsBuf.length;
+    }
+  };
+
+  /* ==================== 角度测量（含左右侧自动选择） ==================== */
+  var Measure = {
+    done: { knee: null, hip: null, shoulder: null },
+    vis: 0,
+
+    update: function (lms) {
+      var vw = Pose.video.videoWidth || 1, vh = Pose.video.videoHeight || 1;
+      var k = vh / vw;                    // 归一化坐标的横竖比例修正
+      function p(i) { return { x: lms[i].x, y: lms[i].y * k }; }
+
+      function angleOf(S) {
+        var knee = Logic.jointAngle(p(S.HIP), p(S.KNEE), p(S.ANK));
+        var hip = Logic.jointAngle(p(S.SH), p(S.HIP), p(S.KNEE));
+        var sh = Logic.jointAngle(p(S.HIP), p(S.SH), p(S.EL));
+        var vis = Math.min(
+          Logic.minVis(lms, [S.HIP, S.KNEE, S.ANK]),
+          Logic.minVis(lms, [S.SH, S.HIP, S.KNEE])
+        );
+        return { knee: knee, hip: hip, shoulder: sh, vis: vis };
+      }
+
+      var L = angleOf(SIDE.L), R = angleOf(SIDE.R);
+      var pick = L.vis >= R.vis ? L : R;
+
+      this.vis = pick.vis;
+      this.done.knee = Logic.smooth(this.done.knee, pick.knee);
+      this.done.hip = Logic.smooth(this.done.hip, pick.hip);
+      this.done.shoulder = Logic.smooth(this.done.shoulder, pick.shoulder);
+      this.done.vis = pick.vis;   // evaluate 读的是返回值 m.vis，必须带出来
+      return this.done;
+    }
+  };
+
+  /* ==================== 语音（任务4 会替换成云端 TTS） ==================== */
+  var Voice = {
+    say: function (text) {
+      // 占位：先只在画面上提示，接入云端 TTS 后在这里播放音频
+      UI.hint(text);
+    }
+  };
+
+  /* ==================== UI ==================== */
+  var UI = {
+    el: {},
+    init: function () {
+      ['cam', 'overlay', 'hint', 'phase', 'startMask', 'btnStart', 'badge', 'chips',
+       'repNow', 'barIn', 'cellKnee', 'cellHip', 'cellShoulder',
+       'visVal', 'fpsVal', 'peakVal',
+       'loadBox', 'loadBarIn', 'loadTxt', 'loadSub', 'introP', 'fallbackLink', 'wbLog'
+      ].forEach(function (id) { UI.el[id] = document.getElementById(id); });
+    },
+    hint: function (text, keep) {
+      var h = this.el.hint;
+      if (!text) { h.classList.remove('show'); h.textContent = ''; return; }
+      h.textContent = text;
+      h.classList.add('show');
+      if (!keep) {
+        clearTimeout(this._t);
+        this._t = setTimeout(function () { h.classList.remove('show'); }, 2600);
+      }
+    },
+    setLoading: function (p, text, sub) {
+      this.el.loadBox.classList.add('show');
+      this.el.loadBarIn.style.width = Math.max(0, Math.min(1, p)) * 100 + '%';
+      this.el.loadTxt.classList.remove('err');
+      this.el.loadTxt.textContent = text;
+      this.el.loadSub.textContent = sub || '';
+      this.el.introP.style.display = 'none';
+      UI.setText('phase', text);
+    },
+    showError: function (text, sub) {
+      this.el.loadBox.classList.add('show');
+      this.el.loadBarIn.style.width = '0%';
+      this.el.loadTxt.classList.add('err');
+      this.el.loadTxt.textContent = text;
+      this.el.loadSub.textContent = sub || '';
+      this.el.btnStart.disabled = false;
+      this.el.btnStart.textContent = '重试';
+      this.el.introP.style.display = 'none';
+      this.el.fallbackLink.classList.add('show');
+      UI.setText('phase', '失败');
+    },
+    setAngle: function (cell, deg, mute) {
+      cell.classList.toggle('mute', !!mute);
+      cell.querySelector('.v').innerHTML =
+        (deg === null ? '--' : Math.round(deg)) + '<small>°</small>';
+    },
+    setText: function (id, t) { this.el[id].textContent = t; },
+    renderCounter: function () {
+      this.setText('repNow', String(Detector.count));
+      this.el.barIn.style.width =
+        Math.min(100, Detector.count / CFG.repGoal * 100) + '%';
+    },
+    renderPeak: function () {
+      var a = Detector.action;
+      this.setText('peakVal', Detector.peak === null ? '--'
+        : Math.round(Detector.peak) + a.unit);
+    }
+  };
+
+  /* ==================== App ==================== */
+  var App = {
+    ready: false, _starting: false,
+
+    boot: function () {
+      UI.init();
+      Pose.init(UI.el.cam, UI.el.overlay);
+
+      Log.attach(UI.el.wbLog);
+      UI.el.fallbackLink.href = location.href;
+      Log.add('boot', '就绪 · ' + location.protocol + '//' + location.host +
+                      ' · isSecureContext=' + (window.isSecureContext ? 'true' : 'false'));
+
+      UI.el.btnStart.addEventListener('click', function () { App.start(); });
+      window.addEventListener('resize', function () { if (Pose.running) Pose.resize(); });
+      Pose.canvas.addEventListener('dblclick', function () { App.stop(); });
+
+      Array.prototype.forEach.call(
+        document.querySelectorAll('.chip'),
+        function (btn) {
+          btn.addEventListener('click', function () {
+            Array.prototype.forEach.call(document.querySelectorAll('.chip'),
+              function (b) { b.classList.remove('on'); });
+            btn.classList.add('on');
+            var id = btn.getAttribute('data-act');
+            var act = ACTIONS.filter(function (a) { return a.id === id; })[0];
+            Detector.setAction(act);
+            Measure.done = { knee: null, hip: null, shoulder: null };
+            UI.renderCounter(); UI.renderPeak();
+            UI.hint(act.name + '：' + act.desc, true);
+            setTimeout(function () { UI.hint(''); }, 3000);
+          });
+        }
+      );
+    },
+
+    start: async function () {
+      if (this._starting) return;
+      this._starting = true;
+
+      var t0 = Date.now();
+      var btn = UI.el.btnStart;
+      btn.disabled = true;
+      btn.textContent = '正在启动…';
+      UI.setLoading(0, '请求摄像头权限…', '若弹出授权框，请点「允许」');
+      Log.add('start', '点击开始');
+
+      var tick = setInterval(function () {
+        UI.el.loadSub.textContent = '已用 ' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒';
+      }, 200);
+
+      try {
+        // 1 先要摄像头：最常见也最快的失败点，立刻给反馈
+        await Pose.startCamera();
+        Log.add('cam', '摄像头已打开 ' + Pose.video.videoWidth + '×' + Pose.video.videoHeight);
+
+        // 2 预载资源，带真实进度
+        UI.setLoading(0, '下载识别模型…', '首次约 20 MB，之后走缓存');
+        Preload.onProgress = function (p) {
+          UI.setLoading(p, '下载识别模型 ' + Math.round(p * 100) + '%');
+        };
+        await withTimeout(Preload.run(), 40000, '资源下载超时（40 秒）');
+
+        // 3 初始化推理引擎
+        UI.setLoading(0.99, '初始化识别引擎…');
+        await withTimeout(Pose.load(), 25000, '识别引擎初始化超时（25 秒）');
+
+        if (!Pose.video.videoWidth) {
+          await new Promise(function (r) {
+            if (Pose.video.videoWidth) return r();
+            Pose.video.addEventListener('loadedmetadata', r, { once: true });
+            setTimeout(r, 3000);
+          });
+        }
+
+        Pose.resize();
+        UI.el.startMask.classList.add('hide');
+        UI.hint('');
+        Pose.running = true;
+        this.ready = true;
+        // 复位按钮：否则停止后遮罩重新出现时，按钮仍停在「正在启动…」且被禁用
+        btn.textContent = '开始训练';
+        btn.disabled = false;
+        UI.setText('phase', Detector.phaseText());
+        Log.add('start', '进入训练，共 ' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒');
+        requestAnimationFrame(function (t) { App.loop(t); });
+      } catch (e) {
+        var msg = describeError(e);
+        Log.add('error', (e && (e.name || 'Error')) + ': ' + (e && e.message));
+        Log.add('stack', String((e && e.stack) || '').split('\n').slice(0, 3).join(' ⟵ '));
+        UI.showError(msg, '必须通过 https 或 localhost 访问。当前 ' +
+                     location.protocol + '//' + location.host);
+        // 摄像头已经打开的话要关掉，否则重试会占着设备
+        if (Pose.video.srcObject) {
+          Pose.video.srcObject.getTracks().forEach(function (t) { t.stop(); });
+          Pose.video.srcObject = null;
+        }
+      } finally {
+        clearInterval(tick);
+        this._starting = false;
+      }
+    },
+
+    stop: function () {
+      Pose.running = false;
+      var s = Pose.video.srcObject;
+      if (s) { s.getTracks().forEach(function (t) { t.stop(); }); Pose.video.srcObject = null; }
+      UI.el.startMask.classList.remove('hide');
+      UI.setText('phase', '已停止');
+    },
+
+    loop: function (ts) {
+      if (!Pose.running) return;
+
+      var fps = Pose.fps(ts);
+      if (fps) UI.setText('fpsVal', fps.toFixed(0));
+
+      if (Pose.video.readyState >= 2) {
+        var res = null;
+        try { res = Pose.landmarker.detectForVideo(Pose.video, ts); } catch (e) { res = null; }
+
+        var lms = res && res.landmarks && res.landmarks[0];
+        if (lms && lms.length >= 33) {
+          Pose.draw(lms);
+          var m = Measure.update(lms);
+          App.evaluate(m);
+        } else {
+          Pose.ctx.clearRect(0, 0, Pose._cw, Pose._ch);
+          UI.setText('visVal', '--');
+          UI.hint('没看到人。请退后一点，让全身进入画面。');
+        }
+      }
+      requestAnimationFrame(function (t) { App.loop(t); });
+    },
+
+    evaluate: function (m) {
+      var ok = m.vis >= CFG.visThreshold;
+
+      UI.setAngle(UI.el.cellKnee, ok ? m.knee : null, !ok);
+      UI.setAngle(UI.el.cellHip, ok ? m.hip : null, !ok);
+      UI.setAngle(UI.el.cellShoulder, ok ? m.shoulder : null, !ok);
+      UI.setText('visVal', m.vis.toFixed(2));
+
+      if (!ok) {
+        UI.setText('phase', '看不清');
+        UI.hint('看不清。请正对摄像头、保证光线，并让全身进入画面。');
+        return;
+      }
+
+      var r = Detector.feed(m);
+      UI.setText('phase', Detector.phaseText());
+
+      if (r.hit) {
+        UI.renderCounter();
+        UI.renderPeak();
+        Voice.say(Detector.action.tipHit + '，第 ' + Detector.count + ' 次');
+        if (Detector.count >= CFG.repGoal) {
+          Voice.say('这一组完成了，可以休息一下');
+        }
+      } else if (r.armed) {
+        Voice.say(Detector.action.tipArmed);
+      }
+    }
+  };
+
+  /* 调试出口：便于用脚本做逻辑回归测试，不影响页面功能 */
+  window.__DEV = { Logic: Logic, Detector: Detector, ACTIONS: ACTIONS,
+                   Measure: Measure, CFG: CFG, Log: Log, Preload: Preload,
+                   Pose: Pose, App: App, UI: UI };
+
+  App.boot();
+})();
+</script>
+</body>
+</html>

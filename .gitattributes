@@ -1,0 +1,9 @@
+# 统一用 LF，避免 Windows 检出后行尾变化污染 diff
+* text=auto eol=lf
+
+# 二进制：禁止任何换行/文本转换
+*.wasm   binary
+*.task   binary
+*.png    binary
+*.jpg    binary
+*.ico    binary

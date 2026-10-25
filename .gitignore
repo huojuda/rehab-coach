@@ -1,0 +1,18 @@
+# 调试与构建产物，不进仓库
+.workbuddy/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 临时与备份
+*.bak
+*.log
+*.tmp
+node_modules/
+
+# 说明：assets/mp/ 与 assets/model/ 必须提交。
+# 本项目要求运行期不依赖任何 CDN，wasm 与模型全部自托管，
+# 所以它们是作品的一部分，不是可再生成的产物。

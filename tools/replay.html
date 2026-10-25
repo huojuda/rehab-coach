@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>火柴人对比 · 标准动作 vs 实际动作</title>
+<style>
+  :root{--bg:#0e1116;--panel:#161b22;--line:#2a313c;--txt:#e8edf4;--dim:#8b97a8;
+        --ok:#2ea043;--bad:#da3633;--accent:#3b8eea;--std:#8b97a8}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+  #wrap{max-width:640px;margin:0 auto;padding:10px 12px 20px}
+  h1{margin:4px 0 10px;font-size:15px;font-weight:500}
+  h1 span{color:var(--dim);font-weight:400;font-size:12px;margin-left:6px}
+
+  #warn{display:none;margin:0 0 10px;padding:7px 10px;border-radius:8px;font-size:12px;
+    background:#3a2a10;border:1px solid #7a5a1a;color:#f0d0a0;line-height:1.6}
+  #warn.show{display:block}
+
+  .row{display:flex;gap:8px;margin-bottom:9px}
+  button{flex:1;padding:9px 6px;border-radius:9px;border:1px solid var(--line);
+    background:#0e1116;color:var(--dim);font:12.5px/1.2 inherit;cursor:pointer}
+  button.on{border-color:var(--accent);background:#1b3252;color:#fff}
+
+  #cv,#curve{width:100%;display:block;border:1px solid var(--line);border-radius:10px;
+    background:#0a0d12}
+  #cv{aspect-ratio:16/10}
+  #curve{height:104px;margin-top:9px}
+
+  #ctrl{display:flex;align-items:center;gap:10px;margin-top:9px}
+  #play{flex:0 0 62px;padding:9px 0}
+  #tl{flex:1;accent-color:var(--accent)}
+  #time{flex:0 0 74px;text-align:right;font:12px/1 ui-monospace,Consolas,monospace;
+    color:var(--dim)}
+
+  .thr{margin-top:11px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+    background:var(--panel)}
+  .thr .lb{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);
+    margin-bottom:7px}
+  .thr .lb b{color:var(--txt);font-weight:500;font-variant-numeric:tabular-nums}
+  .thr label{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--dim);
+    margin:5px 0}
+  .thr input[type=range]{flex:1;accent-color:#2ea043}
+
+  #stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+  .st{background:#0e1116;border:1px solid var(--line);border-radius:9px;padding:8px 10px;
+    text-align:center}
+  .st .k{font-size:10.5px;color:var(--dim);letter-spacing:.4px}
+  .st .v{font-size:20px;font-weight:500;font-variant-numeric:tabular-nums;margin-top:2px}
+  .st .v small{font-size:11px;color:var(--dim);font-weight:400}
+  #statNote{margin-top:8px;font-size:11.5px;color:var(--dim);line-height:1.7}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>火柴人对比 <span>标准 vs 实际 · 纯 Canvas · 离线</span></h1>
+  <div id="warn"></div>
+
+  <div class="row" id="acts"></div>
+  <div class="row">
+    <button id="vSide" class="on">并排查看</button>
+    <button id="vOver">半透明叠加</button>
+  </div>
+
+  <canvas id="cv"></canvas>
+
+  <div id="ctrl">
+    <button id="play">播放</button>
+    <input id="tl" type="range" min="0" max="1000" value="0">
+    <span id="time">0.00s</span>
+  </div>
+
+  <canvas id="curve"></canvas>
+
+  <div class="thr">
+    <div class="lb"><span>达标区间 · <b id="mName">髋关节</b></span>
+      <span><b id="rng">160° – 180°</b></span></div>
+    <label>下限 <input id="lo" type="range" min="0" max="180" value="160"></label>
+    <label>上限 <input id="hi" type="range" min="0" max="180" value="180"></label>
+  </div>
+
+  <div id="stats">
+    <div class="st"><div class="k">标准达标帧</div><div class="v" id="s1">--</div></div>
+    <div class="st"><div class="k">实际达标帧</div><div class="v" id="s2">--</div></div>
+    <div class="st"><div class="k">差值</div><div class="v" id="s3">--</div></div>
+  </div>
+  <div id="statNote"></div>
+</div>
+
+<script src="./fk.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var ACTS = [
+    { id: 'sitstand', name: '坐站转移', metric: 'hip', label: '髋关节' },
+    { id: 'legraise', name: '直腿抬高', metric: 'hip', label: '髋关节' },
+    { id: 'kneeflex', name: '屈膝',     metric: 'knee', label: '膝关节' }
+  ];
+
+  var S = {
+    idx: 0, view: 'side', playing: false, t: 0,
+    lo: 160, hi: 180, std: null, act: null, raf: 0, last: 0
+  };
+
+  var el = {};
+  ['acts', 'cv', 'curve', 'tl', 'time', 'play', 'vSide', 'vOver',
+   'lo', 'hi', 'rng', 'mName', 's1', 's2', 's3', 'statNote', 'warn'
+  ].forEach(function (id) { el[id] = document.getElementById(id); });
+
+  /* ---------- 画布尺寸 ---------- */
+  function fit(cv) {
+    var r = cv.getBoundingClientRect();
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.round(r.width * dpr);
+    cv.height = Math.round(r.height * dpr);
+    var c = cv.getContext('2d');
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { w: r.width, h: r.height, c: c };
+  }
+
+  /* ---------- 画一副骨架 ---------- */
+  function drawFigure(c, pts, ox, oy, sc, color, dash, metric, ok) {
+    function P(k) { return { x: ox + pts[k].x * sc, y: oy + pts[k].y * sc }; }
+    var H = P('H'), Sk = P('S'), K = P('K'), A = P('A'), E = P('E'), W = P('W'), N = P('N');
+
+    c.save();
+    c.strokeStyle = color;
+    c.lineWidth = 4;
+    c.lineCap = 'round';
+    c.setLineDash(dash ? [6, 5] : []);
+
+    function seg(p, q) { c.beginPath(); c.moveTo(p.x, p.y); c.lineTo(q.x, q.y); c.stroke(); }
+    seg(Sk, H); seg(H, K); seg(K, A); seg(Sk, E); seg(E, W);
+
+    c.setLineDash([]);
+    c.beginPath();
+    c.arc(N.x, N.y, FK.LIMB.head * sc, 0, Math.PI * 2);
+    c.stroke();
+
+    /* 关节小球：被评的那个关节按达标情况着色 */
+    var joints = [['H', H], ['S', Sk], ['K', K], ['A', A], ['E', E], ['W', W]];
+    for (var i = 0; i < joints.length; i++) {
+      var name = joints[i][0], p = joints[i][1];
+      var isMetric = (metric === 'hip' && name === 'H') || (metric === 'knee' && name === 'K');
+      c.beginPath();
+      c.arc(p.x, p.y, isMetric ? 7 : 3.5, 0, Math.PI * 2);
+      c.fillStyle = isMetric ? (ok ? '#2ea043' : '#da3633') : color;
+      c.fill();
+    }
+    c.restore();
+  }
+
+  /* ---------- 主画布 ---------- */
+  function drawScene() {
+    var f = fit(el.cv), c = f.c, W = f.w, Hh = f.h;
+    c.clearRect(0, 0, W, Hh);
+
+    var act = ACTS[S.idx];
+    var fs = FK.sampleAt(S.std.frames, S.std.fps, S.t);
+    var fa = FK.sampleAt(S.act.frames, S.act.fps, S.t);
+    var ps = FK.stick(fs), pa = FK.stick(fa);
+
+    var v = fs[act.metric];
+    var okStd = FK.inBand(v, S.lo, S.hi);
+    var okAct = FK.inBand(fa[act.metric], S.lo, S.hi);
+
+    if (S.view === 'side') {
+      var half = (W - 36) / 2;
+      var sc = Math.min(half / 0.92, Hh / 1.22) * 0.92;
+      drawFigure(c, ps, 12 + half / 2, Hh * 0.44, sc, '#8b97a8', true, act.metric, okStd);
+      drawFigure(c, pa, W - 12 - half / 2, Hh * 0.44, sc, '#3b8eea', false, act.metric, okAct);
+
+      c.font = '12px -apple-system,sans-serif';
+      c.fillStyle = '#8b97a8'; c.textAlign = 'center';
+      c.fillText('标准', 12 + half / 2, Hh - 8);
+      c.fillStyle = '#3b8eea';
+      c.fillText('实际', W - 12 - half / 2, Hh - 8);
+      c.strokeStyle = '#20262f'; c.lineWidth = 1;
+      c.beginPath(); c.moveTo(W / 2, 14); c.lineTo(W / 2, Hh - 14); c.stroke();
+    } else {
+      var sc2 = Math.min(W / 1.05, Hh / 1.22) * 0.9;
+      var ox = W / 2, oy = Hh * 0.44;
+      drawFigure(c, ps, ox, oy, sc2, 'rgba(139,151,168,.75)', true, act.metric, okStd);
+
+      /* 偏差连线：差得越远越不透明 */
+      var dv = FK.deviation(ps, pa);
+      c.save();
+      c.lineWidth = 1.5;
+      c.setLineDash([3, 3]);
+      Object.keys(dv.per).forEach(function (k) {
+        var d = dv.per[k];
+        if (d < 0.012) return;
+        var a = Math.min(0.9, d * 6);
+        c.strokeStyle = 'rgba(218,54,51,' + a.toFixed(2) + ')';
+        c.beginPath();
+        c.moveTo(ox + ps[k].x * sc2, oy + ps[k].y * sc2);
+        c.lineTo(ox + pa[k].x * sc2, oy + pa[k].y * sc2);
+        c.stroke();
+      });
+      c.restore();
+
+      drawFigure(c, pa, ox, oy, sc2, '#3b8eea', false, act.metric, okAct);
+
+      c.font = '12px -apple-system,sans-serif';
+      c.textAlign = 'left';
+      c.fillStyle = '#8b97a8';
+      c.fillText('灰虚线 = 标准　蓝实线 = 实际', 12, 18);
+      c.fillStyle = '#da3633';
+      c.fillText('平均关节偏差 ' + (dv.mean * 100).toFixed(1) + ' % 身高', 12, 34);
+    }
+  }
+
+  /* ---------- 角度曲线 ---------- */
+  function drawCurve() {
+    var f = fit(el.curve), c = f.c, W = f.w, Hh = f.h;
+    c.clearRect(0, 0, W, Hh);
+
+    var act = ACTS[S.idx];
+    var dur = (S.std.frames.length - 1) / S.std.fps;
+    var pad = 8, y0 = pad, y1 = Hh - pad;
+
+    function Y(v) { return y1 - (Math.max(0, Math.min(180, v)) / 180) * (y1 - y0); }
+    function X(t) { return pad + (t / dur) * (W - pad * 2); }
+
+    /* 达标带 */
+    c.fillStyle = 'rgba(46,160,67,.16)';
+    c.fillRect(pad, Y(S.hi), W - pad * 2, Math.max(1, Y(S.lo) - Y(S.hi)));
+    c.strokeStyle = 'rgba(46,160,67,.45)';
+    c.setLineDash([4, 4]); c.lineWidth = 1;
+    [S.lo, S.hi].forEach(function (v) {
+      c.beginPath(); c.moveTo(pad, Y(v)); c.lineTo(W - pad, Y(v)); c.stroke();
+    });
+    c.setLineDash([]);
+
+    function series(frames, fps, color, width) {
+      c.beginPath();
+      for (var i = 0; i < frames.length; i++) {
+        var px = X(frames[i].t), py = Y(frames[i][act.metric]);
+        if (i === 0) c.moveTo(px, py); else c.lineTo(px, py);
+      }
+      c.strokeStyle = color; c.lineWidth = width; c.stroke();
+    }
+    series(S.std.frames, S.std.fps, '#8b97a8', 1.5);
+    series(S.act.frames, S.act.fps, '#3b8eea', 2);
+
+    /* 播放头 */
+    var px = X(Math.min(S.t, dur));
+    c.strokeStyle = '#e8edf4'; c.lineWidth = 1;
+    c.beginPath(); c.moveTo(px, y0); c.lineTo(px, y1); c.stroke();
+
+    c.font = '10px ui-monospace,monospace';
+    c.fillStyle = '#5f6b7a'; c.textAlign = 'left';
+    c.fillText('180°', 2, y0 + 8);
+    c.fillText('0°', 2, y1);
+  }
+
+  /* ---------- 统计 ---------- */
+  function renderStats() {
+    var act = ACTS[S.idx];
+    var a = FK.statsFor(S.std.frames, act.metric, S.lo, S.hi);
+    var b = FK.statsFor(S.act.frames, act.metric, S.lo, S.hi);
+    var ra = FK.countReps(S.std.frames, act.metric, S.lo, S.hi);
+    var rb = FK.countReps(S.act.frames, act.metric, S.lo, S.hi);
+
+    el.s1.innerHTML = Math.round(a.pct * 100) + '<small>%</small>';
+    el.s2.innerHTML = Math.round(b.pct * 100) + '<small>%</small>';
+    var d = Math.round((b.pct - a.pct) * 100);
+    el.s3.innerHTML = (d > 0 ? '+' : '') + d + '<small>pp</small>';
+    el.s3.style.color = d < -10 ? '#da3633' : (d < 0 ? '#d29922' : '#2ea043');
+
+    el.rng.textContent = Math.round(S.lo) + '° – ' + Math.round(S.hi) + '°';
+    el.mName.textContent = act.label;
+    el.statNote.innerHTML =
+      '按当前阈值，标准动作能计 <b>' + ra + '</b> 次，实际动作能计 <b>' + rb + '</b> 次。' +
+      '阈值带外的高亮关节会变红，可用来直观看出哪一段没做到位。';
+  }
+
+  /* ---------- 数据加载 ---------- */
+  function loadAct(i, cb) {
+    var a = ACTS[i];
+    S.idx = i;
+    Promise.all([
+      fetch('../assets/moves/standard-' + a.id + '.json').then(function (r) { return r.json(); }),
+      fetch('../assets/moves/demo-' + a.id + '.json').then(function (r) { return r.json(); })
+    ]).then(function (res) {
+      S.std = res[0]; S.act = res[1];
+      S.lo = S.std.band[0]; S.hi = S.std.band[1];
+      S.t = 0;
+      el.lo.value = S.lo; el.hi.value = S.hi;
+
+      var synth = (S.act.source && S.act.source.type === 'synthetic-demo');
+      el.warn.innerHTML = synth
+        ? '注意：右侧「实际动作」当前是<b>合成演示数据</b>，用于跑通界面与阈值联动，' +
+          '不是真实采集。真实数据需要你自己对着摄像头录一次后替换 <code>demo-*.json</code>。'
+        : '数据来源：' + (S.act.source && S.act.source.note ? S.act.source.note : '本机采集');
+      el.warn.classList.toggle('show', !!synth);
+
+      renderAll();
+      if (cb) cb();
+    }).catch(function (e) {
+      el.warn.textContent = '数据加载失败：' + e.message + '（请通过本地服务打开，不要直接双击 html）';
+      el.warn.classList.add('show');
+    });
+  }
+
+  function renderAll() { drawScene(); drawCurve(); renderStats(); }
+
+  /* ---------- 时间轴 ---------- */
+  function tick(ts) {
+    if (!S.playing) return;
+    var dt = S.last ? (ts - S.last) / 1000 : 0;
+    S.last = ts;
+    var dur = (S.std.frames.length - 1) / S.std.fps;
+    S.t += dt;
+    if (S.t > dur) { S.t = dur; pause(); }
+    el.tl.value = String(Math.round(S.t / dur * 1000));
+    el.time.textContent = S.t.toFixed(2) + 's';
+    renderAll();
+    if (S.playing) S.raf = requestAnimationFrame(tick);
+  }
+  function play() { S.playing = true; S.last = 0; el.play.textContent = '暂停'; S.raf = requestAnimationFrame(tick); }
+  function pause() { S.playing = false; el.play.textContent = '播放'; cancelAnimationFrame(S.raf); }
+
+  /* ---------- 事件 ---------- */
+  ACTS.forEach(function (a, i) {
+    var b = document.createElement('button');
+    b.textContent = a.name;
+    b.onclick = function () {
+      Array.prototype.forEach.call(el.acts.children, function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+      pause(); loadAct(i);
+    };
+    if (i === 0) b.classList.add('on');
+    el.acts.appendChild(b);
+  });
+
+  el.vSide.onclick = function () {
+    S.view = 'side';
+    el.vSide.classList.add('on'); el.vOver.classList.remove('on'); drawScene();
+  };
+  el.vOver.onclick = function () {
+    S.view = 'over';
+    el.vOver.classList.add('on'); el.vSide.classList.remove('on'); drawScene();
+  };
+
+  el.play.onclick = function () {
+    var dur = (S.std.frames.length - 1) / S.std.fps;
+    if (S.playing) { pause(); return; }
+    if (S.t >= dur - 0.01) S.t = 0;
+    play();
+  };
+
+  el.tl.oninput = function () {
+    pause();
+    var dur = (S.std.frames.length - 1) / S.std.fps;
+    S.t = Number(el.tl.value) / 1000 * dur;
+    el.time.textContent = S.t.toFixed(2) + 's';
+    renderAll();
+  };
+
+  function onThr() {
+    var lo = Number(el.lo.value), hi = Number(el.hi.value);
+    if (lo > hi) { var tmp = lo; lo = hi; hi = tmp; }
+    S.lo = lo; S.hi = hi;
+    renderAll();
+  }
+  el.lo.oninput = onThr;
+  el.hi.oninput = onThr;
+
+  window.addEventListener('resize', renderAll);
+
+  /* 调试出口，便于脚本化验证 */
+  window.__REPLAY = { S: S, ACTS: ACTS, loadAct: loadAct, renderAll: renderAll };
+
+  loadAct(0, function () { drawScene(); });
+})();
+</script>
+</body>
+</html>
